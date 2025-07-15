@@ -3,58 +3,97 @@ from PIL import Image
 import numpy as np
 import tensorflow as tf
 import openai
+import requests
+from io import BytesIO
+import json
 
-# 🧠 你的模型標籤名稱（照你的訓練順序填）
-CLASS_NAMES = ["狐狸與森林", "小熊與太陽", "小鳥與蘋果"]  # 改成你自己的！
+ESP32_CAM_IP = "192.168.0.30"  # 你的攝影機 IP
+CLASS_NAMES = ["小白", "小雞毛"]
 
-# 1. 載入 Keras/TensorFlow 模型（只需做一次）
 @st.cache_resource
 def load_model():
-    model = tf.keras.models.load_model("tm_model")  # tm_model/ 或 model.h5
-    return model
-
+    return tf.keras.models.load_model("tm_model/keras_model.h5")
 model = load_model()
 
-# 2. 設定 OpenAI API Key（填自己的）
-openai.api_key = st.secrets["OPENAI_API_KEY"] if "OPENAI_API_KEY" in st.secrets else "sk-..."  # 建議改成你的
+try:
+    openai.api_key = st.secrets["OPENAI_API_KEY"]
+except Exception:
+    st.warning("未取得 OpenAI API 金鑰，請於 secrets.toml 設定 OPENAI_API_KEY")
+    st.stop()
 
-st.title("🎨 AI 故事繪本生成 Demo")
-st.write("上傳孩子畫作，自動分類主題，並由 GPT 生成三個故事和關鍵提問。")
+st.title("🎨 AI繪本故事自動生成 Demo (ESP32-CAM 即時連線)")
 
-uploaded_file = st.file_uploader("請上傳畫作圖片", type=["jpg", "jpeg", "png"])
-
-if uploaded_file:
-    # 顯示上傳圖片
-    image = Image.open(uploaded_file).convert('RGB')
-    st.image(image, caption="上傳的畫作", use_column_width=True)
-    
-    # 前處理：模型需 (224,224) 圖片
-    img_resized = image.resize((224, 224))
-    img_np = np.expand_dims(np.array(img_resized) / 255.0, axis=0)
-    
-    # AI 分類
-    preds = model.predict(img_np)[0]
-    idx = np.argmax(preds)
-    label = CLASS_NAMES[idx]
-    confidence = preds[idx]
-    st.success(f"模型判斷主題：**{label}** (信心值：{confidence:.2f})")
-    
-    # GPT 生成三個故事＋一個提問
-    prompt = (
-        f"你是一個會為兒童畫作創作故事的繪本作家。這張畫的主題是「{label}」。"
-        "請以這個主題為素材，生成三個簡短的童話故事開頭（每則 50 字以內），"
-        "以及一個適合小朋友討論的提問。用 JSON 格式回傳：\n"
-        '{"stories":[{"title":"","text":""},...],"question":""}'
+with st.container():
+    st.header("👀 即時預覽與拍照")
+    mjpeg_url = f"http://{ESP32_CAM_IP}:81/stream"
+    st.markdown(
+        f'<img src="{mjpeg_url}" width="320" />',
+        unsafe_allow_html=True
     )
+    st.caption(f"即時畫面來自：{ESP32_CAM_IP}")
+
+    # 拍照後馬上辨識
+    if st.button("拍照辨識"):
+        with st.spinner("正在從 ESP32-CAM 拍照..."):
+            try:
+                r = requests.get(f"http://{ESP32_CAM_IP}/capture", timeout=5)
+                img = Image.open(BytesIO(r.content))
+                st.image(img, caption="拍照結果", use_column_width=True)
+                # 分類
+                img_resized = img.resize((224, 224))
+                img_np = np.expand_dims(np.array(img_resized) / 255.0, axis=0)
+                preds = model.predict(img_np)[0]
+                idx = np.argmax(preds)
+                label = CLASS_NAMES[idx]
+                confidence = preds[idx]
+                st.session_state['ai_label'] = label
+                st.session_state['ai_conf'] = confidence
+                st.session_state['last_img'] = img
+                st.success(f"模型判斷主題：**{label}** (信心值：{confidence:.2f})")
+            except Exception as e:
+                st.error(f"取得照片失敗：{e}")
+                st.stop()
+
+# **只有辨識成功後才顯示下面選項**
+if 'ai_label' in st.session_state and 'last_img' in st.session_state:
+    st.header("🧠 AI 產生繪本故事")
+    st.markdown(f"**辨識結果：{st.session_state['ai_label']} (信心值：{st.session_state['ai_conf']:.2f})**")
+
+    story_morals = ["感恩", "孝順", "體貼他人", "勇敢", "誠實", "分享", "合作", "尊重", "包容"]
+    selected_moral = st.selectbox("請選擇希望孩子學到的故事寓意", story_morals)
+
     if st.button("產生故事"):
-        with st.spinner("AI 正在寫故事..."):
+        with st.spinner("AI 正在寫故事中..."):
+            label = st.session_state['ai_label']
+            img = st.session_state['last_img']
+
+            prompt = (
+                f"這是一張小朋友畫的畫作，主題是「{label}」。"
+                f"請根據主題，以及「{selected_moral}」這個寓意，產生三個150字內、有起承轉合的童話故事，每個故事在轉折處插入一個適合啟發小朋友討論的問題（請獨立為一個欄位，不要夾在故事文字中）。"
+                "請全部用繁體中文回答。"
+                "請用以下json格式回覆：{\"stories\":[{\"title\":\"\",\"text\":\"\",\"question\":\"\"},...],\"summary_question\":\"\"}"
+            )
             response = openai.ChatCompletion.create(
-                model="gpt-4o",
+                model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
-                max_tokens=500,
+                max_tokens=1024,
             )
-            result = response["choices"][0]["message"]["content"]
-            st.markdown("---")
-            st.markdown("### GPT 生成故事：")
-            st.markdown(result)
+            result_text = response["choices"][0]["message"]["content"]
+
+            try:
+                story_json = json.loads(result_text)
+                st.markdown("---")
+                st.markdown("### 🧸 AI 生成故事")
+                for s in story_json.get("stories", []):
+                    st.markdown(f"**{s['title']}**")
+                    st.write(s['text'])
+                    st.markdown(f"> 問題：{s['question']}")
+                    st.markdown("---")
+                st.markdown("#### 總結討論問題")
+                st.info(story_json.get("summary_question", ""))
+            except Exception as e:
+                st.error("解析失敗，以下為原始回覆：")
+                st.code(result_text, language="json")
+
+st.info("確保 Streamlit 伺服器與 ESP32-CAM 在同一區網！")
