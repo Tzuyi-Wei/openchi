@@ -7,7 +7,7 @@ import requests
 from io import BytesIO
 import json
 
-ESP32_CAM_IP = "192.168.0.30"  # 你的攝影機 IP
+ESP32_CAM_IP = "192.168.0.30"  # 攝影機 IP
 CLASS_NAMES = ["小白", "小雞毛"]
 
 @st.cache_resource
