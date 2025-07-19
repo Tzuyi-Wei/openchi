@@ -5,7 +5,7 @@ import socket
 
 # ====== UDP 參數 ======
 UDP_IP = ""
-UDP_PORT = 
+UDP_PORT = 65432
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 # ====== MediaPipe Hands 初始化 ======
